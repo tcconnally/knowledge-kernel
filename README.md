@@ -216,7 +216,7 @@ Memory stores *what happened*. The Kernel stores *what is true*.
 ┌─────────────────────────────────────────┐
 │                 Asset                    │
 │    Where software runs                   │
-│    Example: orange-pi-54                 │
+│    Example: app-server-01                 │
 └─────────────────────────────────────────┘
                     ▲
                     │ runs_on
@@ -256,28 +256,42 @@ Each entity answers one question:
 
 ## Public API
 
-Eight functions. Nothing else is public.
+Ten functions. Nothing else is public.
 
-The public API is intentionally small.
+The public API is defined by `cmdb/api.py:__all__`. Anything not listed
+there is internal — even if it appears in other documents.
+
 **New APIs require empirical evidence gathered during OBSERVE MODE.**
 
 ```python
 from cmdb.api import (
-    cmdb_exists,    # Check before making any factual claim
-    cmdb_get,       # Entity + evidence (+ entity.runs_on computed property)
-    cmdb_list,      # Filter by kind / domain / status
-    cmdb_search,    # Find by name / description / tags
-    cmdb_impact,    # What breaks if X changes? (dependency graph)
-    cmdb_assert,    # Binary validation for decisions
-    cmdb_context,   # Pre-packaged agent startup context (lazy)
-    cmdb_validate,  # Dataset / schema validation
+    cmdb_exists,      # Check before making any factual claim
+    cmdb_get,         # Entity + evidence (+ entity.runs_on computed property)
+    cmdb_list,        # Filter by kind / domain / status
+    cmdb_search,      # Find by name / description / tags
+    cmdb_impact,      # What breaks if X changes? (dependency graph)
+    cmdb_assert,      # Binary validation for decisions
+    cmdb_context,     # Pre-packaged agent startup context (lazy)
+    cmdb_validate,    # Dataset / schema validation
+    cmdb_engine_info, # Operational metadata (generation, dataset_hash, indexes)
+    cmdb_stats,       # Dataset summary (entity counts by kind)
 )
 ```
 
-Operational introspection (not in public API, available via skill tools):
-- `cmdb_reload()` — explicit index invalidation + observable contract
-- `cmdb_engine_info()` — runtime metadata (generation, dataset_hash, index counts)
-- `cmdb_stats()` — dataset summary (entity counts by kind)
+**Authoritative source.** When this README and `docs/api-python.md`
+disagree, `cmdb/api.py:__all__` is the normative source. Documentation
+converges toward the code, not the reverse. See `docs/governance.md` for
+the decision rule when a discrepancy is discovered.
+
+### Out of the public API
+
+These are useful, but **not part of `cmdb.api`** — they live elsewhere
+and have their own contracts:
+
+- `cmdb_reload` — CLI maintenance tool (`tools/cmdb_reload.py`). Forces
+  index invalidation. Side-effect, not query.
+- `cmdb_migrate_dry_run`, `cmdb_migrate_apply` — Internal submodule
+  (`cmdb/migrator.py`). Migration primitives, consumed via CLI.
 
 Everything else in the `cmdb` package is internal — subject to change.
 
@@ -293,8 +307,8 @@ cmdb_get("ollama")
   ▼
 entity.id         = "ollama"
 entity.kind       = "software"
-entity.runs_on    = "orange-pi-54"          ← computed property
-entity.relations  = [{type: "runs_on", target: "orange-pi-54"},
+entity.runs_on    = "app-server-01"          ← computed property
+entity.relations  = [{type: "runs_on", target: "app-server-01"},
                     {type: "exposes", target: "ollama-api"}]
 evidence.confidence_level = HIGH
 evidence.confidence_basis = [SCHEMA_VALIDATED, HUMAN_DECLARED]
@@ -303,7 +317,7 @@ evidence.confidence_basis = [SCHEMA_VALIDATED, HUMAN_DECLARED]
 LLM Reasoning
   │
   ▼
-"Ollama runs on orange-pi-54 (verified, HIGH confidence)"
+"Ollama runs on app-server-01 (verified, HIGH confidence)"
 ```
 
 **User:** "What happens if port 11434 fails?"
@@ -368,7 +382,7 @@ Code and data are permanently separated. Updating the package never touches the 
 
 ---
 
-## What Agent-CMDB Is NOT
+## What a Knowledge Kernel Is NOT
 
 | Not | Because |
 |-----|---------|
@@ -381,22 +395,22 @@ Code and data are permanently separated. Updating the package never touches the 
 
 ---
 
-## When to Use Agent-CMDB
+## When to Use a Knowledge Kernel
 
-**Use knowledge-kernel when:**
+Use knowledge-kernel when:
 
-✓ Multiple agents need the same facts
-✓ Facts must be evidence-backed
-✓ Facts change over time and freshness matters
-✓ Deterministic retrieval is more important than semantic search
-✓ You need a shared source of truth across agents
+- ✓ Multiple agents need the same facts.
+- ✓ Facts must be backed by evidence.
+- ✓ Facts change over time and freshness matters.
+- ✓ Deterministic retrieval is more important than semantic similarity.
+- ✓ You need a shared source of truth across agents.
 
-**Do not use knowledge-kernel when:**
+Do **not** use knowledge-kernel when:
 
-✗ You need document retrieval → use a vector database
-✗ You need conversational memory → use agent memory
-✗ You need vector similarity search → use embeddings
-✗ You need real-time monitoring → use Prometheus/Grafana
+- ✗ You need document retrieval → use a vector database.
+- ✗ You need conversational memory → use an agent memory system.
+- ✗ You need semantic similarity search → use embeddings.
+- ✗ You need real-time monitoring → use Prometheus/Grafana.
 
 ---
 
@@ -432,7 +446,7 @@ export CMDB_DATA_DIR=~/knowledge/knowledge-kernel
 
 # Verify
 python3 -c "from cmdb.api import cmdb_get; print(cmdb_get('ollama').entity.runs_on)"
-# → orange-pi-54
+# → app-server-01
 ```
 
 ---
@@ -464,4 +478,4 @@ README.md (this file)
 
 ## License
 
-MIT — Carlos Cáceres, 2026
+MIT — Kernel Maintainer, 2026

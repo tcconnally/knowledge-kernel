@@ -1,4 +1,4 @@
-# agent-cmdb Test Suite
+# Knowledge Kernel Test Suite
 #
 # Two levels of tests:
 #
@@ -6,9 +6,9 @@
 #   - API, schema, validation, relations, search, impact, config
 #   - These verify the system works, not that specific data exists
 #
-# DATASET TESTS (CIC-specific, for ~/knowledge/agent-cmdb)
+# DATASET TESTS (CIC-specific, for ~/knowledge/knowledge-kernel)
 #   - These verify the CIC dataset contains expected entities
-#   - Run with CMDB_DATA_DIR=~/knowledge/agent-cmdb
+#   - Run with CMDB_DATA_DIR=~/knowledge/knowledge-kernel
 #   - Other users with other datasets would have different Dataset tests
 
 import pytest
@@ -189,10 +189,10 @@ class TestCICDataset:
         assets = cmdb_list(kind="asset")
         assert len(assets) > 0, "No assets found"
         
-        # Check for Orange Pi devices
+        # Check for App Server devices
         asset_ids = [a["id"] for a in assets]
-        assert any("orangepi" in a.lower() or "device-54" in a for a in asset_ids), \
-            "Orange Pi devices not found"
+        assert any("app-server" in a.lower() or "app-server" in a for a in asset_ids), \
+            "App Server devices not found"
     
     def test_exists_firebird(self):
         """Firebird database is registered."""

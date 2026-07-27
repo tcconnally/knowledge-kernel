@@ -1,0 +1,54 @@
+{
+  "purpose": "KernelEngine lifecycle cost (cold subprocess)",
+  "n_samples_per_subprocess": 7,
+  "phases": {
+    "us_import_in_subprocess": {
+      "n": 7,
+      "min": 210136.01904269308,
+      "p50": 253859.89400092512,
+      "p95": 298812.26054858416,
+      "p99": 301948.8841621205,
+      "max": 302733.0400655046,
+      "mean": 249290.91816635005,
+      "unit": "microseconds"
+    },
+    "us_first_get_engine_info": {
+      "n": 7,
+      "min": 823572.336928919,
+      "p50": 905918.9360123128,
+      "p95": 931799.9332328327,
+      "p99": 937981.1394796707,
+      "max": 939526.4410413802,
+      "mean": 878122.2597130442,
+      "unit": "microseconds"
+    },
+    "us_reload_then_info": {
+      "n": 7,
+      "min": 825082.9520402476,
+      "p50": 838371.5189993382,
+      "p95": 910413.9823350124,
+      "p99": 910562.5973059796,
+      "max": 910599.7510487214,
+      "mean": 862148.0135978864,
+      "unit": "microseconds"
+    }
+  },
+  "engine_state_after": {
+    "entities": 53,
+    "dataset_hash": "157d23fa",
+    "memory_kb": 1,
+    "indexes": {
+      "id": 53,
+      "kind": 5,
+      "forward_relation": 51,
+      "reverse_relation": 51
+    }
+  },
+  "observations": [
+    "us_first_get_engine_info exposes the dominant cost \u2014 it triggers",
+    "  ensure_loaded(), which triggers reload() (YAML scan + index build).",
+    "us_reload_then_info re-validates the same cost on a hot engine.",
+    "If both figures are close to 800 ms, reload() runs every time and",
+    "  in-memory indexing does not short-circuit filesystem reads."
+  ]
+}

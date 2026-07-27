@@ -1,0 +1,418 @@
+# Inspector — implementation notes (technical observations)
+
+This file is **not** part of the Inspector contract. It records
+observations made during rule implementation that are useful to the
+next implementer but do not change v0.1.
+
+## Expressivity Pressure (EP) — how to record
+
+When a rule must be reframed because the Kernel model does not
+express the intended phenomenon, record it both in **CSI.md**
+(under "Historical EP events") and inline below with what was
+attempted and what the model lacked.
+
+EP is *informational*, not a verdict. A growing EP count alongside
+an unchanged contract is signal about the **Kernel model**, not the
+**Inspector contract**. These two developments have very different
+prescriptions:
+
+  - High EP → consider whether the Kernel's data model needs
+    additional fields. That is PI-N territory, not v0.2-of-the-Inspector.
+  - High CSI denominator with N contract changes → consider whether
+    the Inspector contract needs revision. That is v0.2-of-the-Inspector.
+
+Keep these separations.
+
+## Recurrence protocol — when to open a PI
+
+The decision to open a research programme from EP events is
+*pattern-based*, **not** number-based. A fixed numeric threshold
+(e.g. "EP ≥ 3") would be arbitrary. Recurrence of an underlying
+phenomenon is the signal.
+
+Sequence:
+
+1. **EP isolated** → record the event with type (EP-R, EP-N,
+   EP-C, EP-K...) and a short reason. Keep everything in CSI.md.
+2. **Several EP of the same type** → formulate a hypothesis about
+   the model's missing representation (analogous to a
+   PI hypothesis). Document it; do **not** open a PI.
+3. **Same hypothesis recurs across different rules** → at this
+   point the phenomenon is no longer incidental. Open a PI.
+4. **PI accumulates evidence** → decide whether the model needs
+   an additional field/concept. Only then does the Kernel v0.x
+   revision start.
+
+A single EP event is not a PI. A second similar event is a
+*signal*, also not a PI. The third event of the same shape is the
+smallest piece of evidence that *might* justify a PI — and even
+then, the PI is opened, not a model revision. Revisions follow
+PI conclusions, not PI openings.
+
+This mirrors the PI-01 protocol that already governs Agent
+Workspace hypotheses.
+
+## Confidence granularity (2026-07-24)
+
+**Observation**: the public Knowledge Kernel API exposes confidence
+for an **entity's evidence** (`cmdb_get(...).evidence.confidence_level`)
+but not for **individual relations** (`entity.relations[].confidence`
+does not exist).
+
+**Consequence** for rule candidates:
+
+- `low_confidence_dependency` (inspects per-relation confidence) is
+  **not implementable** under v0.1. Renamed to
+  `low_confidence_entity` — the rule inspects per-entity
+  confidence only.
+- Any future rule that wants per-relation evidence will need the
+  Kernel API to grow that field. Until then, the rule is parked.
+
+**Status of the parked candidates**:
+
+| Candidate | Reason parked |
+|---|---|
+| `low_confidence_dependency` | Needs per-relation confidence |
+| `cycles_invalid` | Needs graph traversal API surfaces; not yet attempted |
+| `missing_runs_on` | Has analogous issue: must inspect relation absence per kind |
+
+These are technical observations, **not** architectural proposals.
+No PI is opened for them. If the Kernel grows the required public
+API later, the candidates return to the backlog.
+
+## Audit findings — integrations/hermes/tools/* (2026-07-25)
+
+Single audit run, NOT enough to constitute EP. Listed here so
+future audits can detect recurrence. The full report organised
+by plane (Tool / Dataset / Performance) is at:
+
+    docs/audits/2026-07-25-hermes-tools.md
+
+### run_pilot.py — L3 iteration results
+
+- Total: 16 questions across 4 categories.
+- KAR (Kernel Adoption Rate) global: 100%.
+- FGR (Fact Grounding Rate) global: 100%, but by-category:
+  - infrastructure: 0% (4 questions, 0 facts)
+  - dependencies: 0% (4 questions, 0 facts)
+  - endpoints: 0% (4 questions, 0 facts)
+  - agents: 100% (4 questions, 6 facts, 28 assertions)
+- P95 latency: 815ms — target was 250ms; criterion NOT met.
+
+### Dataset state observed
+
+- 33 validation warnings at the YAML validation layer.
+- Cold-start latency in `cmdb_get` (~815ms first call, ~0ms
+  subsequent): suggests cache miss — not a contract issue.
+- "no encontrado" answers for Ollama, MySQL, app-server-01 are
+  accurate — those entities are genuinely absent from the
+  dataset.
+
+### Status
+
+These are run-time findings, **not** EP events. No rule was
+framed and limited by the Kernel model — the dataset genuinely
+lacks the data. Tools themselves worked correctly against the
+live dataset_hash=157d23fa.
+
+To qualify for promotion, a recurrence of these patterns across
+later audits would be needed.
+
+---
+
+## Architectural transition: KernelEngine becomes the canonical runtime representation
+
+### Observation
+
+During the L2 retrieval benchmark (dataset `157d23fa`, 53 entities,
+2026‑07‑25), `cmdb_context` was observed to take ~800 ms per call
+regardless of warm/cold/random/hot mode. Other public APIs
+(`cmdb_exists`, `cmdb_get`, `cmdb_impact`, `cmdb_list`, `cmdb_assert`,
+`cmdb_search`, `cmdb_validate`, `cmdb_engine_info`, `cmdb_stats`)
+showed the expected O(1) over‑index pattern after first load
+(P50 ≈ 0.2–0.5 ms; first call ≈ ≈ 900 ms due to engine reload).
+
+Profiling traced the 800 ms to `cmdb.validator.load_entities_with_paths()`,
+which `re`-parses every YAML in `entities_dir` on **every** call to
+`cmdb_context`. None of the other public APIs follow that path;
+they read through the `KernelEngine` exclusively.
+
+### Diagnosis
+
+This is not a performance symptom. Two representations of the
+same dataset coexist in runtime:
+
+```
+              entities_dir/*.yaml
+                       │
+         ┌─────────────┴─────────────┐
+         ▼                           ▼
+   KernelEngine                  load_entities_with_paths()
+   (id‑indexed Entity tree)      (rebuilt dict on every call)
+         │                           │
+         │                           ▼
+         │                       dict{id: raw_entity}  ← thrown
+         ▼                       away once assertions.py exits scope
+   9 of 10 public APIs
+   read through here
+```
+
+The duplication violates a principle the project already adopted:
+**Single Source of Truth**. The 800 ms latency is a consequence,
+not the cause.
+
+### Closing observation (architectural, not symptomatic)
+
+The project has been moving toward treating `KernelEngine` as the
+**canonical runtime representation** of knowledge. Nine of the ten
+public APIs already do so. Where this transition was incomplete
+shows through `cmdb_context`. Completing it is not optimising one
+function; it is finishing an architectural move that the project
+has already begun elsewhere.
+
+Implications that follow once the transition is declared complete:
+
+- No public API reconstructs entities.
+- No public API parses YAML directly.
+- Every query is served through `KernelEngine`.
+- All derived information is born from `KernelEngine`.
+
+These are architectural properties, not performance targets.
+
+### Open technical task
+
+**Restore Single Source of Truth in runtime:**
+eliminate the parallel dataset representation used by `cmdb_context`,
+so that all knowledge information flows from the canonical runtime
+representation held by `KernelEngine`.
+
+#### Invariancia a restaurar
+
+> Durante la ejecución del proceso existe una única
+> representación canónica del dataset. Ninguna API pública
+> reconstruye una representación equivalente mediante un
+> segundo parseo de los YAML.
+
+#### Acceptance criteria
+
+1. The runtime invariant holds: one canonical representation,
+   held by `KernelEngine`.
+2. All information consumed by `cmdb_context` is obtained from
+   `KernelEngine` or from public APIs built exclusively on it.
+3. The existing `cmdb_context` tests continue to pass.
+4. A regression test asserts that `cmdb_context` returns the
+   declared response keys for both known and unknown `agent_id`
+   values.
+5. A gating test verifies that no execution path reachable from
+   `cmdb_context` reconstructs the dataset by parsing YAML files.
+
+#### Test de invariancia funcional (antes del rendimiento)
+
+Cuando se implemente el refactor, el test primario es de **invariancia**,
+no de rendimiento.
+
+**Propósito**: verificar que la **semántica observable** de
+`cmdb_context` no cambia durante el refactor. No es una igualdad
+byte a byte.
+
+**Forma**:
+
+```
+# Baseline: comportamiento previo del código antes del refactor
+old = cmdb_context("ollama")
+new = refactored_cmdb_context("ollama")
+
+assert old.keys() == new.keys()       # mismo contrato de claves
+assert normalize(old) == normalize(new)   # equivalencia semántica
+```
+
+**Importante**:
+
+1. **`normalize(...)` es obligatorio si el dict contiene campos no
+   deterministas** (`generated_at`, timestamps, IDs efímeros, orden
+   no garantizado de listas, contadores, etc.). La normalización
+   compara la semántica observable, no la igualdad byte a byte.
+2. **El comportamiento previo es baseline de regresión, salvo que
+   exista una decisión explícita de cambiar el contrato.** Hoy
+   ambos coinciden; pero un bug histórico en `cmdb_context` no debe
+   quedar congelado como especificación permanente. Si durante el
+   refactor se descubre que el baseline codifica un bug, la decisión
+   de corregir ese bug pertenece a una promoción registrada en CSI,
+   no a un test de invariancia que fallaría silenciosamente.
+
+**Jerarquía**:
+
+- Test de claves (`keys`) → **obligatorio**: protege el contrato
+  nombrado en `docs/api-python.md`.
+- Test de equivalencia semántica (`normalize(old) == normalize(new)`)
+  → **obligatorio** sobre los campos del contrato, excluyendo los
+  no deterministas.
+- Benchmark de rendimiento (`lifecycle_results.json`,
+  `queries_results.json`, `context_results.json`) → **consecuencia
+  documentada**, no objetivo del cambio. Si la latencia no baja pero
+  la invariancia se cumple, el cambio se acepta igualmente: elimina
+  una violación arquitectónica, no optimiza una consulta.
+
+#### Out of scope (explicitly)
+
+- Modifying the dataset format.
+- Modifying the public contract (`cmdb/api.py` stays at v0.1).
+- Introducing an additional caching mechanism (Redis, SQLite,
+  in‑memory shadow layer, etc.) — these would relocate the
+  duplication, not remove it.
+
+#### Bookkeeping
+
+- Not an EP — the problem is fully characterised and the
+  solution is constrained by an existing principle. An EP is for
+  phenomena whose resolution requires recurrence of evidence.
+- Not an entry in `CSI.md` — `CSI.md` records changes that
+  affect the public contract or the Inspector evolution policy.
+  This task touches neither.
+- The transition status above is annotated as the **closing
+  observation of an architectural move already in progress**,
+  not a new architectural decision.
+
+### Status
+
+- Characterisation: ✅ complete.
+- Implementation: ⏳ not started; awaits an explicit activation
+  decision (or remains in this notes file until something else
+  activates it).
+
+### Relationship with PI-01 / F1
+
+The duplicate-representation phenomenon found here is **one instance**
+of the broader F1 class ("operational knowledge appears during agent
+work"). Completing this transition does **not** close F1 or justify
+closing PI-01.
+
+After implementation, verifiable questions for re-evaluating F1:
+
+- Does any public API remain that reconstructs the dataset by parsing
+  YAML when `KernelEngine` already holds that information?
+- Does any `yaml.safe_load()` call remain on a path reachable from a
+  public API?
+- Do more than one live representation of the same dataset coexist in
+  the same process?
+
+If **all three answers are "no"**, F1 is a stronger candidate for
+re-evaluation — but even then, PI-01 is a research programme, not a
+binary switch. The evaluation belongs to the PI process, not to this
+notes file.
+
+---
+
+## Architectural baseline (Inspector subsystem)
+
+**Established at commit `b88fc95`** — Inspector subsystem reached an
+architectural baseline. Not a performance baseline; an architectural
+one. The distinction matters:
+
+- **Architectural baseline**: the structural properties of the
+  subsystem are stable and the responsibilities are well delimited.
+- **Performance baseline**: latency numbers (lifecycle / queries /
+  context) are recorded separately in `benchmarks/*_results.json`
+  and live with the data they describe.
+
+### What this baseline claims
+
+- One owner per concept:
+  - `identity` → identity algorithm
+  - `evidence` → Evidence construction
+  - `report` → orchestration + serialisation
+  - `kernel_api` → gateway to `cmdb.api`
+  - `rules/` → each individual rule
+  - `cli` → command-line entry point
+- No textual or conceptual duplications of any consequence.
+- Dependency graph between Inspector modules is acyclic and respects
+  the kernel_api ↔ report ↔ rules layering.
+- Deferments recorded with explicit reactivation criteria:
+  - `_StubEvidence` × 5 in tests — revisit when rule count justifies
+    a shared fixture (rule of thumb: 10–15 rules).
+  - `no_declared_relations.py` size (228 lines) — observe; revisit
+    if cyclomatic complexity or function count becomes the limiting
+    factor, not line count.
+  - Mechanism names vs conceptual names in `identity.py`:
+    `finding_key` and `finding_identity` are public (domain
+    concepts); `_stable_finding_hash` is private (implementation
+    detail behind the conceptual API).
+- CSI = 5 : 0 — no contract changes in this baseline.
+- Contract v0.1 — unchanged. Governance rules — unchanged.
+
+### Re-entering the Inspector after this baseline
+
+The Inspector may be revisited when a **new functional requirement**
+appears (e.g. a new rule, a new evidence shape, a new consumer of
+the run output). It should **not** be revisited for "looking for
+more refactors without evidence", because the rationale for that
+mode of work is exhausted at this baseline.
+
+If a revisit produces a change that affects the public contract
+(`Rule`, `Evidence`, `Report`, `Finding`, the `Rule` Protocol
+shape, the JSON output of `Report.to_dict()`, or the `finding_id`
+format) it constitutes a contract change and must be promoted in
+`CSI.md` with a new version label.
+
+If a revisit produces a refactor that does not affect the contract
+but reorganises internals, it is a maintenance change and should
+record what property it preserves (a behaviour, an invariant, a
+number, a format) and how that property is verified (a test, a
+benchmark, a doc test).
+
+This baseline is the **reference state** against which subsequent
+Inspector changes are measured. It does not freeze the code — it
+freezes the responsibility claims above.
+
+#### Reactivation triggers (positive form)
+
+The Inspector is reopened when **any of the following** occurs:
+
+1. **A new functional requirement** appears (new rule, new evidence
+   shape, new consumer of the run output, new CLI surface).
+2. **A contract criterion breaks**: a property in `CONTRACT.md` is
+   violated by current behaviour, or the test suite fails against
+   the documented contract claims.
+3. **New architectural-debt evidence** appears: a duplicated concept
+   with more than one owner, a cycle in the dependency graph, a
+   layer violation, or a module where size / complexity actively
+   thwarts maintenance.
+4. **A governance decision changes**: an entry is added or removed
+   from `CSI.md`, the evolution policy in `CONTRACT.md` is
+   revised, or the versioning scheme is updated.
+
+These are the only legitimate reasons to revisit the Inspector
+after the architectural baseline. "Looking for more refactors
+without evidence" is **not** a reactivation trigger — it is the
+explicit anti-pattern this baseline is designed to resist.
+
+A reactivation triggered by event (1) or (2) opens a **feature or
+bug episode**. A reactivation triggered by event (3) opens an
+**audit episode** of the same shape as the one that produced this
+baseline. A reactivation triggered by event (4) is a **governance
+update** and is recorded in `CSI.md` itself.
+
+Each reactivation references the triggering event number above
+and the artefact that surfaced it. This keeps the reopening
+discipline auditable rather than informal.
+
+#### Note on generalisation
+
+This baseline is **one instance** of a possible pattern. The
+pattern itself — "contract + architectural baseline + explicit
+reactivation triggers + evidence-driven maintenance" — is
+not promoted to a project-wide template at this commit.
+
+Promoting it requires a second consumer of the Kernel with
+its own evidence. Until then, the pattern here is a successful
+case study, not a generalised rule. Generalising without a
+second case would be a premature abstraction — the kind of
+refactor-by-analogy that this baseline is designed to resist.
+
+When a second consumer appears, it should be evaluated on
+its own evidence. If the pattern holds, it can be promoted
+to a template at that point, with the differences between
+the two cases made explicit. If it does not hold, the
+Inspector case remains a single well-documented example,
+not a flawed universal.
+

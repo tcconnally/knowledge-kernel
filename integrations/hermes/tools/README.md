@@ -1,6 +1,6 @@
-# Hermes Tools for Agent-CMDB
+# Hermes Tools for the Knowledge Kernel
 
-Tool wrappers exposing Agent-CMDB functionality to Hermes Agent.
+Tool wrappers exposing the Knowledge Kernel functionality to Hermes Agent.
 
 ## Storage Location
 
@@ -37,7 +37,7 @@ from tools.cmdb_reload import cmdb_reload
 ```yaml
 tools:
   - name: cmdb_exists
-    description: Check if entity exists in Agent-CMDB
+    description: Check if entity exists in the Knowledge Kernel
     function: tools.cmdb_exists:cmdb_exists
     
   - name: cmdb_get
@@ -63,9 +63,9 @@ tools:
 
 ## Testing
 
-Tests live at the repo root (`~/agent-cmdb/tests/`) — they cover the core API plus all tools. There are no separate integration tests in `integrations/hermes/tests/`; the root suite is the source of truth.
+Tests live at the code repository root (`~/knowledge-kernel/tests/`) — they cover the core API plus all tools. There are no separate integration tests in `integrations/hermes/tests/`; the root suite is the source of truth.
 
 ```bash
-cd ~/agent-cmdb
+cd ~/knowledge-kernel
 CMDB_DATA_DIR=~/knowledge/knowledge-kernel pytest tests/ -v
 ```

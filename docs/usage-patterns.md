@@ -42,7 +42,7 @@ if not fact.entity:
     print("Cannot verify — Ollama not in the Kernel")
 
 # Step 2: Ground response
-print(f"Ollama runs on {fact.entity.runs_on}")  # → orange-pi-54
+print(f"Ollama runs on {fact.entity.runs_on}")  # → app-server-01
 print(f"Confidence: {fact.evidence.confidence_level}")
 print(f"Evidence: {fact.evidence.confidence_basis}")
 ```
@@ -174,14 +174,14 @@ print(f'Host: {mysql.entity.runs_on}')
 "
 
 # Then verify connectivity before connecting
-ping -c 1 -W 2 192.168.1.54
+ping -c 1 -W 2 192.168.10.10
 for port in 22 3306; do
-    timeout 2 bash -c "echo >/dev/tcp/192.168.1.54/$port" 2>/dev/null \
+    timeout 2 bash -c "echo >/dev/tcp/192.168.10.10/$port" 2>/dev/null \
         && echo "Port $port: OPEN" || echo "Port $port: CLOSED"
 done
 
 # Then connect
-mysql -h 192.168.1.54 -u agente -p -e "SHOW DATABASES"
+mysql -h 192.168.10.10 -u agente -p -e "SHOW DATABASES"
 ```
 
 ---
@@ -195,7 +195,7 @@ all_software = cmdb_list(kind="software")
 running_here = [
     e["id"] for e in all_software
     if any(
-        r["type"] == "runs_on" and r["target"] == "orange-pi-54"
+        r["type"] == "runs_on" and r["target"] == "app-server-01"
         for r in e.get("relations", [])
     )
 ]
@@ -208,10 +208,10 @@ running_here = [
 Containers with `--network=host` do not appear in `docker ps --format "{{.Ports}}"`. Verify with `ss -tlnp` on the host:
 
 ```bash
-ssh carlos@192.168.1.54 'ss -tlnp | grep -E "LISTEN" | grep -v "127.0.0"'
+ssh user@192.168.10.10 'ss -tlnp | grep -E "LISTEN" | grep -v "127.0.0"'
 ```
 
-Known ports on orange-pi-54 (verified with ss + curl):
+Known ports on app-server-01 (verified with ss + curl):
 
 | Container | Port | Verification |
 |-----------|------|-------------|

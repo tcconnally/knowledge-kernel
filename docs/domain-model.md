@@ -13,7 +13,7 @@
 
 | Criterion | Description | Example ✅ | Example ❌ |
 |-----------|-------------|------------|------------|
-| **Stable identity** | Has a stable, queryable `id` | `ollama`, `orange-pi-54` | `run-20260622`, `session-abc` |
+| **Stable identity** | Has a stable, queryable `id` | `ollama`, `app-server-01` | `run-20260622`, `session-abc` |
 | **Operational query** | Answers production questions | "Where does X run?", "What depends on it?" | README, documentation |
 | **Impact analysis** | Participates in failure chains — its state affects others | "What breaks if this fails?" | Ephemeral config |
 
@@ -29,7 +29,7 @@ If it does not improve queries or impact analysis, it is configuration — not a
 
 | Kind | Description | Examples |
 |------|-------------|----------|
-| `asset` | Physical or virtual host (servers, routers, PCs) | `orange-pi-54`, `servidor-pos` |
+| `asset` | Physical or virtual host (servers, routers, PCs) | `app-server-01`, `pos-server-01` |
 | `software` | Executing process or service (daemon, CLI, library) | `ollama`, `mysql`, `hermes` |
 | `endpoint` | Observable communication identity | `ollama-api`, `telegram-bot` |
 | `automation` | Scheduled scripts, jobs, pipelines | `sync-firebird-mysql` |
@@ -45,7 +45,7 @@ If it does not improve queries or impact analysis, it is configuration — not a
 ┌─────────────────────────────────────────┐
 │                  Asset                   │
 │        Where does software run?          │
-│        Example: orange-pi-54             │
+│        Example: app-server-01             │
 └─────────────────────────────────────────┘
                     ▲
                     │ runs_on
@@ -66,7 +66,7 @@ If it does not improve queries or impact analysis, it is configuration — not a
 │  ID = stable identity                   │
 │  host/port/protocol = observed facts     │
 │  (may change without changing the ID)   │
-│  Example: ollama-api → 192.168.1.54:    │
+│  Example: ollama-api → 192.168.10.10:    │
 │  11434, http                             │
 └─────────────────────────────────────────┘
                     │
@@ -95,7 +95,7 @@ Its **host/port/protocol** are observed facts that may change:
 
 ```yaml
 metadata:
-  host: 192.168.1.54   # observed — may change (IP migration, TLS, load balancer)
+  host: 192.168.10.10   # observed — may change (IP migration, TLS, load balancer)
   port: 11434          # observed — may change (port remapping)
   protocol: http       # observed — may change (HTTPS migration)
 ```
@@ -108,14 +108,14 @@ Tomorrow the endpoint can be `https://ollama.internal:443` and still be `ollama-
 
 | Relation | Semantics | Example |
 |----------|-----------|---------|
-| `runs_on` | Host where software executes | `ollama` runs_on `orange-pi-54` |
+| `runs_on` | Host where software executes | `ollama` runs_on `app-server-01` |
 | `exposes` | Software exposes this endpoint | `ollama` exposes `ollama-api` |
 | `exposed_by` | Endpoint belongs to this software | `ollama-api` exposed_by `ollama` |
 | `uses` | Functional dependency — requires to operate | `hermes` uses `ollama` |
 | `reads` | Reads data from source | `sync` reads `firebird_db` |
 | `writes` | Writes data to destination | `sync` writes `mysql_cic` |
 | `calls` | Direct HTTP/RPC invocation to endpoint | `automation` calls `telegram-api` |
-| `owns` | Ownership or operational responsibility | `cico` owns `orange-pi-54` |
+| `owns` | Ownership or operational responsibility | `cico` owns `app-server-01` |
 | `backs_up` | Backup or replication | `backup-nightly` backs_up `firebird_db` |
 | `monitors` | Monitoring, health checks | `watchdog` monitors `ollama` |
 
@@ -141,7 +141,7 @@ Tomorrow the endpoint can be `https://ollama.internal:443` and still be `ollama-
 ```python
 entity = cmdb_get("ollama")
 print(entity.entity.runs_on)
-# → "orange-pi-54"   ← computed property
+# → "app-server-01"   ← computed property
 ```
 
 ### Scenario 2: What breaks if port 11434 fails?
@@ -162,12 +162,12 @@ impact = cmdb_impact("mysql")
 print(impact["depends_on_me"])
 ```
 
-### Scenario 4: What runs on orange-pi-54?
+### Scenario 4: What runs on app-server-01?
 
 ```python
 all_software = cmdb_list(kind="software")
 running_here = [e["id"] for e in all_software
-                if any(r["type"] == "runs_on" and r["target"] == "orange-pi-54"
+                if any(r["type"] == "runs_on" and r["target"] == "app-server-01"
                        for r in e.get("relations", []))]
 ```
 

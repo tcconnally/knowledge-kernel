@@ -1,8 +1,8 @@
 ---
 name: knowledge-kernel
-description: Knowledge Kernel for AI agents — deterministic grounding layer. Stores verified facts, evidence, relationships, freshness. A shared source of truth that multiple agents can query before reasoning or acting. Owns "Knowledge Kernel" (identity) and "Deterministic Grounding" (capability) as differentiated concepts.
+description: Knowledge Kernel — a deterministic, evidence-backed source of truth for AI agents. Stores verified facts, evidence, relationships, and freshness. Use this when an agent needs to know infrastructure, software, endpoints, dependencies, agents, or projects — anything grounded in empirical reality.
 category: infrastructure
-version: 1.2.0
+version: 2.0.0
 author: Carlos Cáceres
 license: MIT
 tags: [grounding, knowledge-kernel, deterministic-factual-substrate, facts, infrastructure, hallucination-prevention, endpoint-identity]
@@ -10,676 +10,425 @@ tags: [grounding, knowledge-kernel, deterministic-factual-substrate, facts, infr
 
 # knowledge-kernel Skill
 
-**A Knowledge Kernel that provides deterministic grounding for AI agents.**
+> **Decide a question with grounding:**
 
-Three layers: `cmdb_get()` describes the entity, `.entity.runs_on` is computed from relations, and `[references/endpoint-identity-vs-observation.md](references/endpoint-identity-vs-observation.md)` is the key mental model: endpoint ID = stable identity, `host`/`port`/`protocol` = observed facts that may change without breaking the link.
+> 1. Does the Kernel have it? Query it.
+> 2. Does the Kernel have the path to observe it? Query the path, then observe.
+> 3. Otherwise: say "I don't have grounds to answer."
 
-**Core positioning:** "LLMs infer; knowledge-kernel provides a shared, evidence-backed source of truth so multiple agents can reason from the same verifiable reality."
+---
 
-## Arquitectura (principio fundamental: código ≠ datos)
+## Measurement planes
+
+The ecosystem tracks three distinct planes. Conflating them loses
+information about which layer is under pressure:
+
+| Plane | What it measures | Indicator | Where |
+|---|---|---|---|
+| **Inspector contract** | Is the Inspector's Rule/Finding/KernelAPI contract sufficient? | CSI = rules : contract_changes | `consumers/inspector/CSI.md` |
+| **Kernel data model** | Does the model express the phenomena the Inspector needs? | EP (Expressivity Pressure) events | `consumers/inspector/CSI.md` + `NOTES.md` |
+| **Dataset health** | What is the current state of the stored knowledge? | Finding counts per run | JSON reports via `consumers/inspector/tools/runs_diff.py` |
+
+CSI is expressed as `N : M` (rules : contract_changes), never as `∞`.
+PI opening for EP events is **recurrence-based**, not threshold-based.
+See [`references/inspector-pattern.md`](references/inspector-pattern.md) for
+the full Inspector methodology including the EP recurrence protocol.
+
+---
+
+## 1. What is the Knowledge Kernel?
+
+A deterministic, reproducible, auditable factual substrate for AI agents.
+
+It stores:
+
+- **facts** — verified entities (assets, software, endpoints, agents, projects)
+- **evidence** — why each fact is trusted (`source`, `observed_at`, `confidence`)
+- **relationships** — how facts connect (`runs_on`, `uses`, `exposed_by`, etc.)
+- **freshness** — whether each fact is still valid
+
+One canonical home per concept. Many agents query it. Always choose it
+over inference, over RAG, and over conversation memory.
+
+---
+
+## 2. Where does everything live?
+
+### Canonical paths
+
+| What                    | Where                                           |
+|-------------------------|-------------------------------------------------|
+| Repo (code, package)    | `<repo-root>` (`~/knowledge-kernel/`)           |
+| Skill location          | `~/.hermes/skills/knowledge-kernel/`            |
+| Skill entrypoint        | `~/.hermes/skills/knowledge-kernel/SKILL.md` (this file) |
+| Dataset (production)    | `<dataset-root>` (YAML entities)                |
+| **Documentation**       | `<repo-root>/docs/`                             |
+| Hermes tools (wrappers) | `~/.hermes/skills/knowledge-kernel/tools/`       |
+| Tests                   | `<repo-root>/tests/`                            |
+
+### Structural layers
+
+The repo is organized into three layers with distinct dependencies:
 
 ```
-~/knowledge-kernel/                   ← código (repo git)
-~/.local/share/knowledge-kernel/      ← datos por defecto (CMDB_DATA_DIR)
-~/knowledge/knowledge-kernel/         ← dataset de producción (RECOMENDADO)
+kernel/        ← the model; no dependencies upward
+consumers/     ← framework-agnostic consumers of the public API
+                inspector/, telemetry/ — run from any agent or CI
+integrations/  ← platform-specific adapters; depend on external platform
+                hermes/ — depends on Hermes
 ```
 
-**Código y datos VAN EN DIRECTORIOS SEPARADOS.** El skill vive en `~/.hermes/skills/knowledge-kernel/`, el código en `~/knowledge-kernel/` (repo git, `sowerkoku/knowledge-kernel`). El dataset de producción está en `~/knowledge/agent-cmdb/` (NO se muda — los datos tienen vida distinta al branding). Esto permite:
-- Actualizar el paquete sin tocar los datos
-- Cambiar de rama git sin perder datos
-- Backups independientes
-- Reutilizar el mismo código con datasets distintos
+**`consumers/` vs `integrations/`** is an architectural boundary enforced
+by `tests/test_consumers_boundary.py`. A consumer must not import from
+any `integrations/*` package (hermes, openclaw, etc.) or from the
+integrations layer itself. If a component needs a platform, it belongs
+in `integrations/`, not `consumers/`. This keeps `consumers/` reusable
+across agents.
 
-## API Pública (congelada)
+### Configuration
 
-Usar SIEMPRE `from cmdb.api import ...`:
+```bash
+# Dataset location
+export CMDB_DATA_DIR=<dataset-root>
+
+# Install the package (run once)
+<repo-venv>/bin/python3 -m pip install -e <repo-root>
+
+# Verify
+<repo-venv>/bin/python3 -c "from cmdb.api import cmdb_get; print('✓')"
+```
+
+### Pitfall: never hardcode `data_dir` inside Python
+
+All modules read from `get_config().data_dir`. See
+`docs/pitfalls/default-path-drift.md`.
+
+---
+
+## 3. What APIs exist, and when to use each?
+
+The public API is defined by `cmdb/api.py:__all__` — that file is the
+normative source. This skill lists the entry points; for signatures,
+examples, and return-type details, read the canonical reference.
 
 ```python
 from cmdb.api import (
-    cmdb_exists,    # Verificar existencia antes de afirmar
-    cmdb_get,       # Entidad completa con evidencia
-    cmdb_search,    # Buscar por nombre/descripción/tags
-    cmdb_list,      # Listar por kind/status/domain
-    cmdb_context,   # Contexto pre-empaquetado para agente
-    cmdb_impact,    # Análisis de dependencias (ANTES de modificar)
-    cmdb_assert,    # Validación binaria para toma de decisiones
-    cmdb_validate,  # Validar salud del CMDB
+    # Query
+    cmdb_exists,    # Existence check before any factual claim
+    cmdb_get,       # Full entity with evidence + relations
+    cmdb_search,    # Free-text search by name/desc/tags
+    cmdb_list,      # Filtered enumeration by kind/domain/status
+    # Decisions
+    cmdb_impact,    # Dependency graph (BEFORE modifying anything)
+    cmdb_assert,    # Binary assertion for decision points
+    cmdb_context,   # Pre-packaged agent context (call once at start)
+    # Validation
+    cmdb_validate,  # Health check on the whole Kernel
+    # Operational introspection
+    cmdb_engine_info,  # Generation counter, dataset_hash, index sizes
+    cmdb_stats,        # Entity counts by kind, relation total, dataset hash
 )
 ```
 
-**Todo lo demás en el paquete `cmdb` es implementación interna** — puede cambiar sin previo aviso.
-
-## Taxonomía v2 (domain + kind)
-
-El modelo usa **dos niveles**: dominio (alto) + kind (específico).
-
-```python
-from cmdb.taxonomy import VALID_DOMAINS, ALL_KINDS, KIND_TO_DOMAIN
-
-# Dominios (4):
-# - infrastructure: asset, endpoint, network
-# - software: software, automation
-# - knowledge: procedure, policy, decision, capability
-# - organization: agent, project, team
-```
-
-**Criterio de inclusión:** Una entidad pertenece al Kernel si:
-1. Es un hecho objetivo
-2. Tiene única fuente de verdad
-3. Cambia relativamente poco
-4. Múltiples agentes la consultan
-
-**NO incluye:** conversaciones, brainstorming, notas temporales, RFC en discusión, documentación extensa, razonamientos (eso va a RAG, Git o memoria de Hermes).
-
-### cmdb_list() con dominio
-
-```python
-# Listar toda la infraestructura operacional
-infra = cmdb_list(domain="infrastructure", status="operational")
-
-# Listar todos los proyectos
-projects = cmdb_list(domain="organization", kind="project")
-
-# Listar todos los procedures
-procedures = cmdb_list(kind="procedure")
-```
-
-## Modelo de entidades y relaciones
-
-### Jerarquía
-
-```
-Asset  (orange-pi-54)
-   ▲
-   │ runs_on
-   │
-Software  (ollama)
-   │
-   │ exposes
-   ▼
-Endpoint  (ollama-api: 192.168.1.54:11434)
-```
-
-Cada nivel tiene responsabilidad clara:
-
-| Entidad | Responsabilidad | Ejemplo |
-|---|---|---|
-| `asset` | Dónde se ejecuta | `orange-pi-54` |
-| `software` | El proceso o servicio | `ollama`, `mysql` |
-| `endpoint` | Un punto de acceso observable | `ollama-api`, `portainer-ui` |
-
-### Tipos de relación soportados
-
-| Relación | De | Hacia | ¿Se almacena? |
-|---|---|---|---|
-| `runs_on` | software | asset | Sí |
-| `exposes` | software | endpoint | Sí |
-| `exposed_by` | endpoint | software | Sí (dual de `exposes`) |
-| `uses` / `calls` | software | software | Sí |
-| `reads` / `writes` | software | data | Sí |
-
-**Nota sobre `Endpoint`:** Un endpoint representa una **identidad de comunicación**, no una URL. El ID es estable (`ollama-api`) pero `host`/`port`/`protocol` en metadata son hechos observados que pueden cambiar sin alterar la identidad. Esto permite que un endpoint migre de IP/puerto/protocolo/TLS/balanceador sin cambiar su ID lógico.
-
-### Consultar la jerarquía
-
-```python
-# ¿Dónde corre Ollama? → propiedad computada
-r = cmdb_get("ollama")
-print(r.entity.runs_on)  # → "orange-pi-54"
-
-# ¿Qué endpoints expone Ollama?
-impact = cmdb_impact("ollama")
-print([d for d in impact['depends_on_me']['direct'] if d.get('kind') == 'endpoint'])
-# → [{'id': 'ollama-api', 'kind': 'endpoint', 'relation': 'exposes'}]
-
-# ¿Qué pasa si cierra ollama-api (puerto 11434)?
-impact = cmdb_impact("ollama-api")
-print(f"SPOF: {impact['risk_indicators']['single_point_of_failure']}")
-print(f"Afecta a: {[d['id'] for d in impact['depends_on_me']['direct']]}")
-# → SPOF=True, afecta a: ['ollama'] (el software que lo expone)
-# → y a su vez: open-webui (que usa ollama)
-```
-
-**Nota:** `endpoint` es `kind: endpoint` en la taxonomía. Su `metadata` contiene `host`, `port`, `protocol` — no son atributos del software, son del punto de acceso.
-
-## FGR — How to Measure Kernel Quality
-
-FGR (Fact Grounding Rate) measures how often agents use Kernel facts vs inferring. But it has nuances:
-
-**Old (wrong) formula:** FGR = assertions backed by Kernel / total assertions
-
-**Correct decomposition — three separate metrics:**
-
-| Metric | Measures | Formula |
-|---|---|---|
-| **Kernel Coverage** | Does the Kernel have data for the question? | Questions where Kernel has data / Total questions |
-| **Agent Reasoning Accuracy** | Did the agent reason correctly on the data? | Correct reasonings / Questions with Kernel data |
-| **Dataset Quality** | Does the data have the right properties? | Entities with required metadata / Total entities |
-
-**The 12-question test (2026-07-07) revealed:**
-
-```
-Kernel Coverage:    11/12  (92%) — 1 gap: metadata.ip
-Agent Reasoning:   10/12  (83%) — 2 errors: string-match counting, ID inference
-Dataset Quality:   ~90%    — needs: metadata.ip, manufacturer, model on assets
-```
-
-**What FGR is NOT:**
-- A measure of the Kernel's intelligence
-- A percentage of "correct answers"
-- The agent's quality score
-
-**What FGR IS:**
-- A measure of how often the agent chose the Kernel over inference
-- The signal for when to expand the Kernel (low Coverage)
-- The signal for when the agent needs better grounding guidance (low Reasoning Accuracy)
-
-### How to Measure FGR in Practice
-
-```python
-# After each agent session, track:
-assertions = agent.get_assertions()
-grounded = [a for a in assertions if a.source == "cmdb_api"]
-fgr = len(grounded) / len(assertions) if assertions else 0
-```
-
-### Why Dataset Gaps Are Not Kernel Failures
-
-| Gap type | Example | Owner |
-|---|---|---|
-| Missing `metadata.ip` | No IP on asset entities | Dataset population (Runtime Discovery) |
-| Missing `manufacturer` | Can't query "all Orange Pis" by model | Dataset population |
-| Missing `kind` taxonomy | Entity has no kind | Governance / dataset design |
-
-The Kernel's schema is correct. The dataset has population gaps. These are closed by Runtime Discovery (SSH → observe → propose → human approval → add to Kernel) — not by redesigning the model.
-
-## Configuración
-
-```bash
-# Directorio de datos — PRODUCCIÓN (dataset real en ~/knowledge/agent-cmdb/)
-# El branding del repo cambió a knowledge-kernel pero los datos NO se mudan
-export CMDB_DATA_DIR=~/knowledge/agent-cmdb
-
-# Instalación del paquete (repo clonado en ~/agent-cmdb/)
-~/.hermes/hermes-agent/venv/bin/python3 -m pip install -e ~/agent-cmdb
-
-#验证安装
-python3 -c "from cmdb.api import cmdb_get; print('✓')"
-
-# Otros paths de datos (no son producción — para testing o desarrollo)
-export CMDB_DATA_DIR=~/knowledge/knowledge-kernel    # alternativa — si se muda algún día
-export CMDB_DATA_DIR=~/.local/share/knowledge-kernel # fallback por defecto del paquete
-```
-
-## Comportamiento Obligatorio
-
-### Regla 1: Consultar antes de afirmar
-
-```python
-# ❌ Incorrecto
-print("MySQL corre en server-42")
-
-# ✅ Correcto
-result = cmdb_exists("mysql")
-if result["exists"]:
-    print(f"MySQL existe: {result['kind']} ({result['confidence']})")
-else:
-    print("MySQL no encontrado en CMDB")
-```
-
-`cmdb_exists()` retorna `{exists, entity_id, kind, status, reason, source, confidence}` — el agente decide si la confianza es suficiente.
-
-### Regla 2: Verificar confianza antes de afirmar con certeza
-
-```python
-# ❌ Incorrecto (asume confianza sin verificar)
-if result["evidence"]["confidence_level"] == "verified":
-    ...
-
-# ✅ Correcto (usa el contrato real de la API)
-r = cmdb_get("ollama")
-level = r.evidence.confidence_level  # ConfidenceLevel enum: HIGH | MEDIUM | LOW | UNKNOWN
-basis = r.evidence.confidence_basis  # list[EvidenceBasis]: SCHEMA_VALIDATED, HUMAN_DECLARED, ...
-if level.value == "high":
-    print(f"Ollama corre en {r.entity.runs_on} (alto)")  # → "orange-pi-54"
-else:
-    print(f"Confianza insuficiente: {level.value} / base={basis}")
-```
-
-### Regla 3: Impacto antes de modificar
-
-```python
-impact = cmdb_impact("ollama")
-if impact["risk_indicators"]["single_point_of_failure"]:
-    print("⚠️ SPOF detectado — requiere mantenimiento")
-print(f"Direct dependents: {[d['id'] for d in impact['depends_on_me']['direct']]}")
-```
-
-### Sobre `expires_at`
-
-`evidence.expires_at` forma parte del contrato público y **no debe eliminarse**, aunque se compute derivando `observed_at + ttl`. Es una propiedad observable de la Evidence — los agentes ya la consultan. Sustituirla por fórmula obligaría a cambiar todas las integraciones.
-
-## How to Answer Questions Using the Kernel
-
-The Kernel rarely answers a question directly. Most questions require reasoning after getting facts. Three patterns:
-
-### Pattern 1: Fact-Backed Answer (direct)
-
-The Kernel has the complete fact. The agent reports it.
-
-```
-Question: ¿Dónde corre MySQL?
-Answer:   cmdb_get("mysql") → runs_on = "orange-pi-54"
-Agent:    "MySQL corre en orange-pi-54 (HIGH confidence, schema_validated)"
-```
-
-### Pattern 2: Grounded Answer (Kernel + tool execution)
-
-The Kernel provides the endpoint/facts. The agent uses them to observe something external.
-
-```
-Question: ¿Qué tablas tiene DB_CIC?
-Kernel:   mysql-db-cic exists, runs_on=orange-pi-54, endpoint=mysql-cic
-          → Agent has credentials and host
-Tool:     SELECT table_name FROM information_schema.tables WHERE table_schema='DB_CIC'
-Agent:    "DB_CIC tiene las siguientes tablas: fact_ventas_v3, fact_reposicion..."
-```
-
-The Kernel does NOT contain table schemas. But it contains the endpoint, credentials, and location — enough to drive the query. **"Outside the Kernel's domain" does not mean "cannot answer." It means "use the Kernel's facts to observe."**
-
-### Pattern 3: Composite Answer (multiple queries)
-
-```
-Question: ¿Qué pasa si cierro el puerto 11434?
-Kernel:   cmdb_impact("ollama-api") → SPOF=True, affects: open-webui
-Agent:    "Cerrar 11434 afecta a ollama-api (su único endpoint de LL inference)."
-          "open-webui pierde su backend de LLM. No hay fallback configurado."
-```
-
-### Decision Tree: How to Approach Any Question
-
-```
-Question arrives
-    │
-    ├─ Can the Kernel answer this directly?
-    │   ├─ Yes (cmdb_get / cmdb_list / cmdb_search):
-    │   │   → Use Kernel. Report fact with confidence level.
-    │   │
-    │   └─ No (requires external observation):
-    │       ├─ Does the Kernel provide the path to observe? (endpoint, credentials, host)
-    │       │   ├─ Yes: Grounded answer — use Kernel facts → execute tool → report
-    │       │   └─ No: "I don't have enough facts in the Kernel to answer this."
-    │       │
-    │       └─ Is the missing fact within the Kernel's domain?
-    │           ├─ Yes (asset, software, endpoint, relationship): → the dataset has a gap
-    │           └─ No (table schemas, logs, runtime metrics): → correctly outside the Kernel
-```
-
-### Critical: What "Outside the Kernel's Domain" Really Means
-
-**Does NOT mean:** "I cannot answer."
-**Does mean:** "The answer requires external observation, and I need to use the Kernel's facts to drive it."
-
-| Question type | Kernel's role | Example |
-|---|---|---|
-| Where does X run? | Complete answer | `cmdb_get → runs_on` |
-| How many assets? | Complete answer | `cmdb_list(kind=asset)` |
-| What tables in DB_CIC? | Partial: provides endpoint + credentials | Agent executes SQL |
-| Is X stale? | Complete answer | `cmdb_get → evidence.is_fresh()` |
-| What logs on .54? | Provides hostname | Agent SSH + journalctl |
-| What broke after restart? | Provides software list | Agent SSH + health checks |
-
-### How to Avoid the Three Common Mistakes
-
-**Mistake 1: Counting entities by string-matching the ID**
-```
-❌ "How many servers?" → count entities with "server" in id
-✅ "How many servers?" → cmdb_list(kind="asset") → count all
-```
-The ID format is arbitrary. The `kind` and `domain` taxonomies are the stable categories.
-
-**Mistake 2: Inferring facts from the ID**
-```
-❌ "server-192-168-1-52" → infer IP = 192.168.1.52
-✅ cmdb_get("server-192-168-1-52") → metadata.ip
-```
-The ID encodes no facts. Metadata holds observed properties. If `metadata.ip` is missing, the dataset has a gap — not a reason to infer.
-
-**Mistake 3: Stopping at "the Kernel doesn't have this"**
-```
-❌ "Table schemas are not in the Kernel" → "I cannot answer"
-✅ "The Kernel has the DB endpoint" → use it to query information_schema
-```
-The Kernel is a grounding layer, not a complete encyclopedia. Its job is to provide enough facts to enable observation.
-
-## Contrato de API (estable)
-
-Funciones públicas en `cmdb.api`:
-
-| Función | Retorna |
-|---|---|
-| `cmdb_exists(id)` | `dict` con `{exists, entity_id, kind, status, reason, source, confidence}` |
-| `cmdb_get(id)` | objeto con `.exists`, `.entity`, `.evidence` | Ver tabla detallada abajo |
-
-### Objeto `cmdb_get()` — estructura completa
-
-Retorna un objeto `CMDBResult` con tres miembros:
-
-#### `.entity` — hechos puros (qué existe)
-
-| Miembro | Tipo | Descripción |
-|---|---|---|
-| `.id` | `str` | Identificador único |
-| `.kind` | `str` | Tipo: asset, software, automation, data, endpoint, procedure, ... |
-| `.status` | `str \| None` | operational, degraded, down, deprecated |
-| `.metadata` | `dict` | name, description, version, etc. (no incluye `runs_on`) |
-| `.relations` | `list` | relaciones declaradas en YAML: `[{type, target}, ...]` |
-| `.runs_on` | `Property[str\|None]` | **Propiedad computada.** Busca la primera relación `type: runs_on` y retorna su `target`. Si no existe, retorna `None`. Filosofía: misma que `freshness` — calculada en acceso, no almacenada. |
-
-**Acceso correcto:**
-```python
-r = cmdb_get("ollama")
-if r.entity.runs_on:
-    print(f"Ollama corre en {r.entity.runs_on}")  # → "orange-pi-54"
-```
-
-`cmdb_impact()["i_depend_on"]["direct"]` sigue disponible para quien necesite el grafo completo de dependencias inversas.
-
-#### `.evidence` — por qué confiamos (inmutable, separado del hecho)
-
-| Miembro | Tipo | Observaciones |
-|---|---|---|
-| `.confidence_level` | `Property[ConfidenceLevel]` | Enum: `HIGH \| MEDIUM \| LOW \| UNKNOWN` |
-| `.confidence_basis` | `Property[list[EvidenceBasis]]` | Lista de enums: `SCHEMA_VALIDATED`, `HUMAN_DECLARED`, `RUNTIME_CHECKED`, `INFERRED`, `DISCOVERED` |
-| `.observed_at` | `Property[datetime]` | Momento de la observación |
-| `.expires_at` | `Property[datetime \| None]` | Caducidad calculada desde TTL; `None` si no hay política |
-| `.is_fresh()` | `Method → bool \| None` | Calcula frescura en tiempo de ejecución |
-| `.time_to_expiry_seconds()` | `Method → float \| None` | Segundos restantes o `None` |
-| `.source_file` | `str` | Ruta del archivo YAML fuente |
-| `.validated` | `bool` | Si pasó validación de schema |
-| `.entity_hash` | `str` | Hash SHA256[:16] del hecho |
-| `.schema_version` | `int` | Versión del schema |
-
-**Ejemplo de acceso correcto:**
-```python
-r = cmdb_get("ollama")
-level = r.evidence.confidence_level        # ConfidenceLevel.HIGH
-basis = r.evidence.confidence_basis       # [SCHEMA_VALIDATED, HUMAN_DECLARED]
-is_fresh = r.evidence.is_fresh()         # True / False / None (llamar con paréntesis)
-ttl = r.evidence.time_to_expiry_seconds()  # 3520.5 | None (llamar con paréntesis)
-```
-| `cmdb_search(query)` | `list[dict]` items con `{id, kind, domain, metadata, status}` |
-| `cmdb_list(...)` | `list[dict]` items con `{id, kind, domain, metadata, status}` |
-| `cmdb_validate()` | `dict` con `{valid, errors, warnings, stats}` |
-| `cmdb_impact(id)` | `dict` con `{target, exists, depends_on_me, i_depend_on, affected_layers, risk_indicators}` |
-| `cmdb_assert(id, kind, status)` | validación binaria para toma de decisiones |
-| `cmdb_context(agent_id)` | `dict` con `{identity, known_environment, dependents, warnings, evidence}` |
-
-**Regla para futuros cambios:** Si modificás una firma existente, hacé `cmdb.api.cmap_*` con nuevo nombre de función — no rompas compatibilidad. v1.x es API congelada.
-
-## Separación de Responsabilidades
-
-|| knowledge-kernel provee | Agente (LLM) decide |
-|-------------------|---------------------|
-| Hechos: "ollama corre en server-53" | Interpretación: "esto es riesgoso" |
-| Evidencia: por qué confiar | Recomendaciones |
-| Confianza: nivel de calidad | Decisiones |
-| Impacto: gráfico de dependencias | Acciones |
-
-## Contrato de Consumo del Knowledge Kernel
-
-### Principio fundamental
-
-> **If a fact exists in the Knowledge Kernel, prefer it over inference.**
-> **If a fact is not in the Knowledge Kernel, treat it as unverified.**
-
-The Knowledge Kernel may provide the facts necessary to perform additional observations or tool execution.
-
-### Cuándo consultar el Kernel
-
-Consult the Knowledge Kernel whenever a question involves:
-- Infrastructure (assets, servers, network)
-- Software locations and versions
-- Endpoints (host, port, protocol, credentials)
-- Dependencies between components
-- Agent identities and their running environments
-- Projects, procedures, and policies
-- Configuration facts with evidence
-
-### Qué NO hacer
-
-```
-✗ Infer facts from entity IDs
-     Incorrect:  server-192-168-1-52 → IP = 192.168.1.52
-     Correct:   metadata.primary_ip = 192.168.1.52
-
-✗ Infer network addresses from naming conventions
-     Incorrect:  "orangepizero3" has IP .53 because the ID ends in 3
-     Correct:    metadata.primary_ip = 192.168.1.53
-
-✗ Assume relationships not present in the Kernel
-     Incorrect:  "mysql probably runs on the same server as ollama"
-     Correct:    cmdb_impact("mysql") → read runs_on from Kernel
-
-✗ Treat missing facts as false
-     Incorrect:  "There is no endpoint for DB_CIC"
-     Correct:    cmdb_get("mysql-db-cic") → if no endpoint found, say "unverified"
-```
-
-### Dos tipos de respuestas
-
-#### Fact-backed answer
-```
-Question
-    ↓
-Knowledge Kernel (cmdb_get, cmdb_list, cmdb_search)
-    ↓
-Answer
-```
-
-Example: *"¿Dónde corre Hermes?"*
-```python
-r = cmdb_get("hermes")
-answer = f"Hermes corre en {r.entity.runs_on}"
-```
-
-#### Grounded answer
-```
-Question
-    ↓
-Knowledge Kernel (cmdb_get, cmdb_list)
-    ↓
-Need external observation?
-    ↓
-Yes → Tool execution (SSH, SQL query, HTTP probe)
-    ↓
-Answer
-```
-
-Example: *"¿Qué tablas tiene DB_CIC?"*
-```python
-# Step 1: Get DB_CIC endpoint from Kernel
-r = cmdb_get("mysql-db-cic")
-# Step 2: Connect to the endpoint
-# Step 3: SELECT table_name FROM information_schema.tables
-# Step 4: Return answer
-```
-
-The Kernel does not need to know the table names. The Kernel knows **where DB_CIC is** and **how to reach it**. That is still grounding.
+Ten public functions. Anything not exported by `cmdb.api.__all__` is
+internal, regardless of where else it appears in the documentation.
+
+> **API Reference**: The canonical, complete documentation of the public
+> API (all functions, return types, usage patterns, best practices,
+> anti-patterns, compatibility) lives in
+> [`docs/api-python.md`](../knowledge-kernel/docs/api-python.md).
+
+### What is NOT in the public API
+
+- `cmdb_reload` — CLI maintenance tool at `tools/cmdb_reload.py`. Forces
+  index invalidation. Side-effect, not query.
+- `cmdb_migrate_dry_run`, `cmdb_migrate_apply` — internal submodule
+  (`cmdb/migrator.py`). Migration primitives invoked via CLI.
+
+**Decision rule on documentation drift.** If this SKILL.md and
+`docs/api-python.md` disagree, follow `cmdb/api.py:__all__` and update
+the docs to match. Documentation converges toward code, not the reverse.
 
 ### Decision flow
 
 ```
-User Question
-      ↓
-Need facts?  ─No→  Reason normally
-      │
-     Yes
-      ↓
-Knowledge Kernel (cmdb_*)
-      ↓
-Enough information to answer?
-      │
-     Yes → Fact-backed answer
-      │
-     No → Can additional observation be performed?
-              │
-             Yes → Execute tools (SSH, SQL, HTTP)
-              │         ↓
-              │    Answer (grounded)
-              │
-             No → "I don't have verified information about X"
+Question arrives
+  │
+  ├─ Can the Kernel answer directly?
+  │   ├─ Yes → cmdb_get / cmdb_list / cmdb_search
+  │   │        → Report fact with evidence.confidence
+  │   │
+  │   └─ No (needs external observation)
+  │       ├─ Does the Kernel give the path? (endpoint, host, credentials)
+  │       │   ├─ Yes → use Kernel facts → execute tool → report
+  │       │   └─ No → "I don't have grounds to answer."
 ```
 
 ### Anti-patterns
 
-**Wrong:**
-```
-entity.id = "server-192-168-1-52"
-      ↓
-infer IP = 192.168.1.52
-```
-Reason: Inference from naming convention, not observed fact.
-
-**Correct:**
-```
-entity.metadata.primary_ip = "192.168.1.52"
-entity.evidence.observed_at = "2026-07-07T..."
-```
-Reason: Observed fact with evidence, TTL, and source.
+- Do **not** infer facts from entity IDs (`server-192-168-1-52` does **not**
+  encode the IP — read `metadata.primary_ip`)
+- Do **not** count entities by string-match on IDs (`cmdb_list(kind=...)` is
+  the stable category)
+- Do **not** treat missing facts as false — say "unverified"
+- Do **not** modify anything without first running `cmdb_impact(id)`
+- Do **not** commit infrastructure-specific data to the public repo (IPs, hostnames, MACs, PIDs, telemetry). See
+  [`references/repository-instance-boundary.md`](references/repository-instance-boundary.md) for the security sanitization workflow.
+- Do **not** add alarmist notes to README after cleanup — silent removal is
+  preferred over drawing attention to historical data no longer in HEAD.
+- Do **not** store bare (unquoted) ISO dates in YAML `metadata.*` fields. PyYAML parses them as `datetime.date` objects. When `_compute_entity_hash()` calls `json.dumps()`, it crashes with `TypeError: Object of type date is not JSON serializable`. Always quote dates in YAML: `started: "2026-07-06"` not `started: 2026-07-06`. Fix in commit `c956cfe` (`cmdb/query.py: _json_default` serializer).
+- Do **not** treat `~/.hermes/skills/knowledge-kernel/` as the source of truth. This directory has **no git tracking**. Any non-git tool (Hermes process, cron job, external script) that writes there causes the SKILL.md and tools to drift from the git-tracked canonical source in `~/knowledge-kernel/integrations/hermes/`. **Sync direction is always: repo → skill.** See [`references/skill-repo-sync.md`](references/skill-repo-sync.md).
+- Do **not** state a change as done until evidence exists. `"Edición lista"` or `"Convergencia demostrada"` are claims, not facts. When a change is claimed, show `git diff`, byte hashes, or test output — not a narrative description. The next agent must be able to verify the claim without trusting the speaker. See [`references/public-api-audit-jul-2026.md`](references/public-api-audit-jul-2026.md) for the worked example (2026-07-24, commits `e0e9d64` → `7935cae`).
 
 ---
 
-## Workflow de Migración (AUDIT ANTES de migrar)
+## 4. Executable Tools
 
-**Regla dorada:** La auditoría es más valiosa que la migración. Nunca migrar sin auditar primero.
+Beyond the Python API, the skill ships standalone tools for operational
+tasks. All accept `CMDB_DATA_DIR` env var (defaults to `~/knowledge/knowledge-kernel`).
+Run with `python3 <tool.py>` from any directory.
+
+### Observability — health & metrics
+
+| Tool | What it answers | When to use |
+|------|----------------|-------------|
+| `kpi.py` | DQS (quality), FFR (freshness), entity breakdown by kind, validation result | Periodic health check. Run before and after any bulk change. |
+| `cmdb_stats.py` | Entity count, relation count, per-kind breakdown, dataset hash | Quick snapshot — lighter than `kpi.py`, no validation step. |
+| `cmdb_engine_info.py` | Generation counter, reload speed, last reload timestamp, index sizes | Debug why a query returns stale data. Confirm engine reloaded after edits. |
+
+### Query — reading the Kernel
+
+| Tool | What it answers | When to use |
+|------|----------------|-------------|
+| `cmdb_exists.py <id>` | Does entity X exist? | **Always** — before making any factual claim. |
+| `cmdb_get.py <id>` | Full entity + evidence + relations | Deep reasoning about specific entity. |
+| `cmdb_impact.py <id>` | Dependency graph: what breaks if X fails? | **Before modifying or deleting any entity.** |
+| `cmdb_context.py <id>` | Pre-packaged context bundle for agent startup | Call once per agent session to prime the context. |
+
+### Decision — binary gates
+
+| Tool | What it answers | When to use |
+|------|----------------|-------------|
+| `cmdb_assert.py <id> <kind> <status>` | Binary: is entity X of kind Y with status Z? | Gates in CI/CD, pre-commit checks, automation decision points. |
+| `cmdb_validate.py` | Full dataset health: errors, warnings | Before committing YAML changes, before push, as part of cron health job. |
+
+### Maintenance — keeping the Kernel current
+
+| Tool | What it answers | When to use |
+|------|----------------|-------------|
+| `cmdb_reload.py` | Did indexes rebuild? Time taken? New hash? | **After editing YAML directly** — the engine caches indexes; this forces rebuild. |
+| `grounding_pilot.py` | KAR (kernel adoption rate), FGR (grounding rate) per category | Measure how often the agent chooses the Kernel over inference. Run in OBSERVE mode. |
+| `run_pilot.py` | Runs the full grounding pilot suite | Periodic measurement cadence. Produces reproducible grounding metrics. |
+
+### Quick reference
 
 ```bash
-# 1. AUDIT dry-run — análisis sin escribir archivos
-~/.hermes/hermes-agent/venv/bin/python3 -m cmdb.audit --from ~/registry
+# Health snapshot
+CMDB_DATA_DIR=~/knowledge/knowledge-kernel python3 ~/.hermes/skills/knowledge-kernel/tools/kpi.py
 
-# 2. Validar criterios de éxito:
-#    ✅ 100% schema valid
-#    ✅ 0 duplicate IDs  
-#    ✅ 0 broken relations
-#    ✅ 0 unknown kinds
-#    ✅ Acceptance readiness >= 95%
+# Fast existence check (no full entity load)
+CMDB_DATA_DIR=~/knowledge/knowledge-kernel python3 ~/.hermes/skills/knowledge-kernel/tools/cmdb_exists.py ollama
 
-# 3. Solo si audit pasa → migrar
-cmdb migrate-registry --from ~/registry --to ~/knowledge/knowledge-kernel
+# Impact analysis before touching anything
+CMDB_DATA_DIR=~/knowledge/knowledge-kernel python3 ~/.hermes/skills/knowledge-kernel/tools/cmdb_impact.py server-192-168-1-53
 
-# 4. post-migration: acceptance tests en verde
-cd ~/knowledge-kernel && ~/.hermes/hermes-agent/venv/bin/python3 -m pytest tests/test_acceptance.py
+# Reload after YAML edit
+CMDB_DATA_DIR=~/knowledge/knowledge-kernel python3 ~/.hermes/skills/knowledge-kernel/tools/cmdb_reload.py
+
+# Dataset stats (lightweight)
+CMDB_DATA_DIR=~/knowledge/knowledge-kernel python3 ~/.hermes/skills/knowledge-kernel/tools/cmdb_stats.py
+
+# Engine telemetry
+CMDB_DATA_DIR=~/knowledge/knowledge-kernel python3 ~/.hermes/skills/knowledge-kernel/tools/cmdb_engine_info.py
 ```
 
-**Criterio de éxito de migración:**
-- 100% de entidades con schema válido
-- 0 IDs duplicados
-- 0 relaciones rotas
-- Acceptance Tests en verde
-- 0 errores críticos
+> The Python API (`from cmdb.api import cmdb_get, ...`) covers all query and
+> decision functions programmatically. The tools above are CLI wrappers around
+> the same API — use whichever is more convenient.
 
-El audit tool se convierte en regression test: cada vez que evoluciones el schema, ejecutás audit dry-run y sabés inmediatamente si rompés compatibilidad con el conocimiento existente.
+---
 
-## Instalación
+## 5. Contract — what must never break?
 
-```bash
-# REQUISITO: Hermes usa Python 3.11, NO instalar en Python del sistema (3.12)
-~/.hermes/hermes-agent/venv/bin/python3 -m pip install -e ~/knowledge-kernel
+These are **permanent invariants**. Every change in the codebase respects them.
 
-# Verificar
-python3 -c "from cmdb.api import cmdb_get; print('✓')"
+### Invariant 0 — One Responsibility, One Canonical Home
+
+A fact lives in exactly one place. The Kernel is the canonical home of
+facts. RAG indexes facts from the Kernel. Memory stores user preferences,
+not facts. Conversations are ephemeral.
+
+### Invariant 1 — Code ≠ Data
+
+The package lives in `<repo-root>`. The data lives in `<dataset-root>`.
+Updating one does not touch the other.
+
+### Invariant 2 — Determinism
+
+Two agents querying the same stable dataset produce the same answer.
+
+### Invariant 3 — Auditability
+
+Every fact carries `provenance.discovered_by`, `discovery_method`, and
+`discovery_run` (when observed via SSH / Docker / etc.). If it can be
+reproduced, it can be audited.
+
+### Invariant 4 — Evidence separation
+
+A fact (what) and the evidence for it (why) are stored separately. The
+agent can reason on each independently.
+
+### Invariant 5 — Stable identity, mutable observation
+
+Endpoint `id`s are stable. The fields `host` / `port` / `protocol` describe
+the observed access point and may change without altering the entity ID.
+This lets an endpoint migrate from `192.168.1.50:3306` to
+`192.168.1.54:3306` without breaking relations.
+
+### Invariant 6 — Documentation Authority Hierarchy
+
+When multiple documents describe the same surface and contradict,
+authority is resolved by rank, not by majority:
+
+```
+1. cmdb/api.py:__all__                       ← normative (the surface itself)
+2. docs/api-python.md                        ← canonical reference (derived)
+3. README.md, integrations/hermes/SKILL.md   ← derived documentation
+4. ~/.hermes/skills/knowledge-kernel/SKILL.md ← runtime artifact, never authoritative
 ```
 
-**Pitfall conocido:** Si instalás con `pip install -e` (sin path completo al venv), se instala en Python del sistema (3.12) y no en el venv de Hermes (3.11). Siempre usar el path completo.
+**Default action when a discrepancy is found:** fix the documentation
+to match `cmdb/api.py:__all__`. Touching code to accommodate docs
+requires a real defect + breaking-change justification.
 
-## Testing
+**Enforced by test:** `tests/test_doc_governance.py::test_skill_two_copies_remain_in_sync`
+asserts the repo-side and runtime-side SKILL.md are byte-identical.
+A red test is **evidence of an unresolved governance decision**, not
+noise to suppress. Resolve the decision before relaxing the test.
 
-El proyecto tiene DOS niveles de tests:
+Procedure when the test fails: backup the runtime copy first, classify
+each diff block (correction / operational knowledge / error), then sync
+in the appropriate direction. See
+`references/public-api-audit-jul-2026.md` for the worked example
+(commit `e0e9d64`, 2026-07-24).
 
-### Core Tests (siempre pasan, 14/14)
-Verifican que el **sistema funciona**, no que existen datos específicos.
-```bash
-CMDB_DATA_DIR=~/knowledge/knowledge-kernel \
-  ~/.hermes/hermes-agent/venv/bin/python3 -m pytest tests/test_acceptance.py -v -k "Core"
-```
-- API: cmdb_exists/get/search/list/validate retornan estructura correcta
-- Schema: entidades tienen campos requeridos, sin IDs duplicados
-- Relations: cmdb_impact funciona para entidades existentes
-- Config: CMDB_DATA_DIR se carga correctamente
+---
 
-### Dataset Tests (CIC-specific)
-Verifican que un **dataset concreto** contiene las entidades esperadas.
-```bash
-CMDB_DATA_DIR=~/knowledge/knowledge-kernel \
-  ~/.hermes/hermes-agent/venv/bin/python3 -m pytest tests/test_acceptance.py -v -k "Dataset"
-```
-Esta separación hace el proyecto reutilizable: otros usuarios con otros datasets tendrían sus propios Dataset tests.
-
-**Regla:** Core Tests deben pasar 100% antes de cualquier release. Dataset Tests son específicos del deployment.
-
-**Documentation structure (3 levels — canonical homes):**
+## 6. Structure
 
 ```
-README.md
- ├── philosophy.md       ← why it exists, principles, KPIs (FGR/Coverage/Freshness)
- └── architecture.md    ← how the pieces connect (code vs data, lazy integration)
-
- domain-model.md    ← what entities represent
- schema-v1.md        ← how entities are serialized
- usage-patterns.md   ← how to query it
- governance.md       ← what belongs to the Kernel
- audit-methodology.md ← how to verify quality
- error-log.md        ← how it fails
- github-metadata.md  ← repo metadata (positioning, topics, description)
+SKILL.md              ← this file. Permanent + small.
+docs/                 ← permanent reference
+  philosophy.md        Why the Kernel exists (includes Repository/Instance Boundary)
+  architecture.md      L1 + L2 engine
+  observability.md     KAR / FGR / KHI
+  governance.md        Inclusion test
+  schema-v1.md         Entity YAML contract
+  domain-model.md      Asset/Software/Endpoint/Evidence
+  api-python.md        **Python API reference (canonical)**
+  pitfalls/            One folder per pitfall
+  playbooks/           Operational recipes
+  history/             Experimental + historical
+  releases/            User-facing release notes
+references/           ← session-specific detail & operational guides
+  repository-instance-boundary.md  Security sanitization + boundary principle
+  skill-repo-sync.md               Skill ↔ repo sync workflow (critical)
+  yaml-pitfalls.md                 YAML quoting and type gotchas
+scripts/              ← maintenance tools
+  update-github-meta.sh
 ```
 
-**Canonical homes per concept:**
+---
 
-| Concept | Document |
-|---------|----------|
-| Six principles + KPIs (FGR/Coverage/Freshness) | `philosophy.md` |
-| Pipeline Kernel → Facts → Reasoning | `architecture.md` |
-| Asset/Software/Endpoint/Evidence | `domain-model.md` |
-| YAML schema + validation rules | `schema-v1.md` |
-| Inclusion criteria (Survival Test) | `governance.md` |
-| Why Not RAG / Why Not Memory | `philosophy.md` (section 9) |
+## 7. Documentation & Positioning
 
-**Rule: each document answers one dominant question.**
+### Project vs Category distinction
 
-## Posicionamiento (para cuando necesites comunicar el proyecto)
+**knowledge-kernel** (lowercase, hyphenated) = this specific project/repository.
 
-**Frase canonical:** "knowledge-kernel is a Knowledge Kernel that provides deterministic grounding for AI agents."
+**Knowledge Kernel** (capitalized, spaces) = the architectural pattern/category that this project implements and aims to define.
 
-**Lead paragraph:** "A Knowledge Kernel — a shared source of truth that stores verified facts, evidence, relationships, and freshness so multiple agents can reason consistently from the same verifiable reality."
+Use the distinction consistently:
+- Refer to the **project** as `knowledge-kernel` (code, repo, package name).
+- Refer to the **concept** as "a Knowledge Kernel" or "the Knowledge Kernel pattern" when discussing the architectural category.
 
-**GitHub description:** "Deterministic grounding layer and shared source of truth for AI agents. Store verified facts, evidence, relationships and freshness."
+Section titles should speak to the **category**, not the brand:
+- ✅ `## What a Knowledge Kernel Is Not`
+- ✅ `## When to Use a Knowledge Kernel`
+- ❌ `## What knowledge-kernel Is Not` (too narrow — speaks only to this repo)
 
-**Lo que almacena (4 componentes):**
-- `facts` → qué sabemos (entidades verificadas, no inferidas)
-- `evidence` → por qué lo creemos (source, confidence, observed_at)
-- `relationships` → cómo se conecta (runs_on, exposes, uses...)
-- `freshness` → qué tan vigente es (computed, not stored)
+This positioning reinforces that the project documents and exemplifies the pattern, not just implements it.
 
-**Propietarios de dos conceptos diferenciados:**
-- **Knowledge Kernel** → identidad del proyecto (no compite con CMDB)
-- **Deterministic Grounding** → capacidad que proporciona (no compite con RAG ni memory)
+### Markdown format for "Use / Do not use" sections
 
-**Qué NO es (evitar ambigüedad):**
-- No es RAG ni vector DB → respuestas exactas, no búsqueda por similitud
-- No es Agent Memory → almacena hechos verificados, no conversaciones
-- No es CMDB → no es inventario IT para humanos; es capa factual para agentes
-- No es monitoring → no tiene métricas en tiempo real
+When authoring "When to Use" or similar decision sections in documentation:
 
-**Why Not RAG / Why Not Memory (argumentos de venta):**
-- RAG: similarity search vs deterministic lookup; documents vs facts; probabilistic vs exact
-- Memory: experiences vs facts; subjective vs objective; personal vs shared; mutable vs evidence-backed
+```markdown
+## When to Use a Knowledge Kernel
 
-**Cuando usar:**
-✓ Múltiples agentes necesitan los mismos hechos
-✓ Los hechos deben estar respaldados por evidencia
-✓ La frescura importa (facts cambian, freshness importa)
-✓ Retrieval determinístico > búsqueda semántica
-✓ Necesitas una shared source of truth
+Use knowledge-kernel when:
 
-**Keywords para descubrimiento:** ai-agents, grounding, knowledge-kernel, deterministic-ai, shared-source-of-truth, context-engineering, structured-memory, facts, evidence, knowledge-graph
+- ✓ Multiple agents need the same facts.
+- ✓ Facts must be backed by evidence.
+- ✓ Facts change over time and freshness matters.
+- ✓ Deterministic retrieval is more important than semantic similarity.
+- ✓ You need a shared source of truth across agents.
+
+Do **not** use knowledge-kernel when:
+
+- ✗ You need document retrieval → use a vector database.
+- ✗ You need conversational memory → use an agent memory system.
+- ✗ You need semantic similarity search → use embeddings.
+- ✗ You need real-time monitoring → use Prometheus/Grafana.
+```
+
+Key formatting rules:
+- Use proper markdown list bullets (`- ✓` / `- ✗`), not plain text with checkmarks.
+- Emphasize negation: `Do **not** use` (not just "Do not use").
+- End every list item with a period (`.`) for consistency.
+- Use precise technical vocabulary: "semantic similarity search" (not "semantic search"), "agent memory system" (not "agent memory").
+- Keep alternatives actionable: "→ use X" with a concrete tool/pattern.
+
+### Branding migration workflow
+
+For systematic project renaming across documentation, see:
+
+**[`references/branding-migration-playbook.md`](references/branding-migration-playbook.md)** — Step-by-step workflow for rebranding initiatives, including triage heuristics (what to edit vs what to preserve), commit message templates, and verification steps.
+
+---
+
+### Compatibility vs Aesthetics — Decision Criterion
+
+When considering whether to rename internal identifiers (env vars, default paths, module names, CLI commands), apply this test:
+
+> **"Does this change bring value to the user, or only improve code aesthetics?"**
+
+If only aesthetics → **postpone** until the next major version cycle (v2.0+).
+
+**v1.x stability window:** Internal identifiers (`AGENT_CMDB_DATA_DIR`, `~/agent-cmdb/` defaults, `cmdb` module name, `cmdb` CLI) are intentionally preserved despite the public brand migration to "Knowledge Kernel". Breaking changes require:
+- Bundled in a single v2.0 release
+- Deprecation warnings for one full minor cycle
+- Migration guide documenting the change
+- Evidence of real-world adoption justifying the churn
+
+See **[`references/runtime-compatibility-cleanup.md`](references/runtime-compatibility-cleanup.md)** for the full v2.0 roadmap and activation criteria.
+
+---
+
+## 8. Links
+
+- [`docs/philosophy.md`](../knowledge-kernel/docs/philosophy.md) — Why build this?
+- [`docs/architecture.md`](../knowledge-kernel/docs/architecture.md) — How the engine works
+- [`docs/observability.md`](../knowledge-kernel/docs/observability.md) — Metrics framework
+- [`docs/governance.md`](../knowledge-kernel/docs/governance.md) — Inclusion criteria
+- [`docs/schema-v1.md`](../knowledge-kernel/docs/schema-v1.md) — Entity schema
+- [`docs/domain-model.md`](../knowledge-kernel/docs/domain-model.md) — Asset/Software/Endpoint/Evidence
+- [`docs/api-python.md`](../knowledge-kernel/docs/api-python.md) — **Python API reference (canonical)**
+- [`docs/pitfalls/`](../knowledge-kernel/docs/pitfalls/) — One file per pitfall
+- [`docs/playbooks/`](../knowledge-kernel/docs/playbooks/) — Operational recipes
+- [`docs/history/`](../knowledge-kernel/docs/history/) — Experimental + historical
+- [`docs/releases/`](../knowledge-kernel/docs/releases/) — Release notes
+- [`references/inspector-pattern.md`](references/inspector-pattern.md) — Inspector pattern: falsable,
+  deterministic findings; companion to `public-api-audit-jul-2026.md`
+- [`references/pi-01-operational-knowledge.md`](references/pi-01-operational-knowledge.md) — Research
+  programme PI-01: deciding when operational knowledge deserves a component

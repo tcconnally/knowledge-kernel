@@ -195,10 +195,10 @@ for e in cmdb_list():
 The Kernel audits itself. Validating Kernel vs real infrastructure requires separate tooling:
 
 ```bash
-# Kernel says: ollama runs on orange-pi-54, exposes ollama-api
+# Kernel says: ollama runs on app-server-01, exposes ollama-api
 # Reality check via SSH:
-ssh carlos@192.168.1.54 'ss -tlnp | grep 11434'
-ssh carlos@192.168.1.54 'curl -s http://localhost:11434/api/tags'
+ssh user@192.168.10.10 'ss -tlnp | grep 11434'
+ssh user@192.168.10.10 'curl -s http://localhost:11434/api/tags'
 ```
 
 This is the job of the **Runtime Discovery skill** — not part of the Kernel itself.

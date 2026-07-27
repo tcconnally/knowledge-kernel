@@ -79,7 +79,7 @@ status: operational
 
 relations:
   - type: runs_on
-    target: orange-pi-54
+    target: app-server-01
   - type: exposes
     target: ollama-api
 
@@ -111,7 +111,7 @@ domain: infrastructure
 metadata:
   name: Ollama API
   # IDENTITY: host/port/protocol may change without changing the ID
-  host: 192.168.1.54
+  host: 192.168.10.10
   port: 11434
   protocol: http
 
@@ -152,7 +152,7 @@ Fields in `metadata` are **observed facts** — they describe the current state,
 ```yaml
 # host/port/protocol are observed — they may change
 metadata:
-  host: 192.168.1.54    # could become ollama.internal
+  host: 192.168.10.10    # could become ollama.internal
   port: 11434           # could become 443
   protocol: http        # could become https
 ```
@@ -165,7 +165,7 @@ This is intentional. An endpoint's **ID is its communication identity** — stab
 
 | Kind | Description | Example |
 |------|-------------|---------|
-| `asset` | Physical or virtual host | `orange-pi-54`, `servidor-pos` |
+| `asset` | Physical or virtual host | `app-server-01`, `pos-server-01` |
 | `software` | Executing process or service | `ollama`, `mysql`, `hermes` |
 | `endpoint` | Observable communication identity | `ollama-api`, `telegram-bot` |
 | `automation` | Scheduled scripts, jobs, pipelines | `sync-firebird-mysql` |
@@ -214,7 +214,7 @@ relations:
 
 ```python
 entity = cmdb_get("ollama")
-entity.runs_on   # → "orange-pi-54" — computed from relations
+entity.runs_on   # → "app-server-01" — computed from relations
                 # NOT from metadata.runs_on
 ```
 
@@ -295,7 +295,7 @@ The Kernel never stores `expires_at` — it would go stale. Freshness is always 
 
 | Rule | Pattern | Example ✅ | Example ❌ |
 |------|---------|------------|------------|
-| Unique across entire CMDB | — | `mysql`, `orange-pi-54` | Duplicated ID |
+| Unique across entire CMDB | — | `mysql`, `app-server-01` | Duplicated ID |
 | Lowercase | `^[a-z0-9-]+$` | `server-54`, `firebird-db` | `Server-54`, `FirebirdDB` |
 | Kebab-case | No underscores | `backup-nightly` | `backup_nightly` |
 | Max 64 chars | `len(id) ≤ 64` | — | `sync-firebird-mysql-backup-verification...` |
